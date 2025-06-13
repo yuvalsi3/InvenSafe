@@ -55,8 +55,7 @@ invensafe/
 ### 1. Clone the project
 
 ```bash
-git clone https://github.com/your-username/invensafe.git
-cd invensafe
+git clone https://github.com/yuvalsi3/InvenSafe.git
 ```
 
 ### 2. Create virtual environment (recommended)
