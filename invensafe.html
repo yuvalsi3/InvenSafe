@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <title>InvenSAFE | תשלום</title>
+  <script src="https://www.paypal.com/sdk/js?client-id=AZPnstNtZl0egnLe6eJuEMG_ZPPpmzEPO8r8CVF41iUNoSEArSzDyItKkg1u2ueQgjunZU9633JIk4k2&currency=USD"></script>
+  <style>
+    body {
+      font-family: "Segoe UI", sans-serif;
+      background: #fefbf7;
+      direction: rtl;
+      padding: 20px;
+      text-align: center;
+    }
+    .product {
+      margin: 10px;
+    }
+    .container {
+      max-width: 500px;
+      margin: auto;
+      background: white;
+      padding: 30px;
+      border-radius: 15px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.1);
+    }
+    h2 { color: #444; }
+    button {
+      margin-top: 10px;
+      padding: 10px 20px;
+      font-size: 16px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    #verify-btn {
+      background-color: #28a745;
+      color: white;
+      display: none;
+    }
+    #predict-btn {
+      background-color: #007bff;
+      color: white;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>בחר מוצרים לתשלום</h2>
+
+    <div class="product">
+      <label><input type="checkbox" value="Coke" data-price="5.00"> Coke</label>
+    </div>
+    <div class="product">
+      <label><input type="checkbox" value="Fanta" data-price="4.50"> Fanta</label>
+    </div>
+    <div class="product">
+      <label><input type="checkbox" value="Sprite" data-price="4.00"> Sprite</label>
+    </div>
+
+    <div id="paypal-button-container" style="margin-top: 20px;"></div>
+    <button id="verify-btn">אמת את הפנים לפתיחת מקרר</button>
+    <button id="predict-btn">זיהוי המוצרים שנטלו</button>
+  </div>
+
+  <script>
+    let transactionId = null;
+
+    function getSelectedItems() {
+      const checkboxes = document.querySelectorAll('input[type="checkbox"]:checked');
+      let items = [];
+      let total = 0;
+
+      checkboxes.forEach(cb => {
+        let price = parseFloat(cb.dataset.price);
+        total += price;
+        items.push({
+          name: cb.value,
+          quantity: "1",
+          unit_amount: {
+            currency_code: "USD",
+            value: price.toFixed(2)
+          }
+        });
+      });
+
+      return { items, total: total.toFixed(2) };
+    }
+
+    function pollTriggerReady() {
+      const checkInterval = setInterval(() => {
+        fetch("http://localhost:5000/trigger_status?transaction_id=" + transactionId)
+          .then(res => res.text())
+          .then(status => {
+            if (status.includes("TRIGGER_DONE")) {
+              clearInterval(checkInterval);
+              alert("🎉 התשלום הצליח וצילום הפנים בוצע בהצלחה!");
+              document.getElementById("verify-btn").style.display = "inline-block";
+              document.getElementById("predict-btn").style.display = "inline-block";
+            }
+          })
+          .catch(err => {
+            console.error("שגיאה בבדיקת סטטוס trigger:", err);
+          });
+      }, 2000);
+    }
+
+    paypal.Buttons({
+      createOrder: function (data, actions) {
+        const selected = getSelectedItems();
+        if (selected.items.length === 0) {
+          alert("אנא בחר לפחות מוצר אחד");
+          return;
+        }
+
+        return actions.order.create({
+          purchase_units: [{
+            amount: {
+              currency_code: "USD",
+              value: selected.total,
+              breakdown: {
+                item_total: {
+                  currency_code: "USD",
+                  value: selected.total
+                }
+              }
+            },
+            items: selected.items
+          }]
+        });
+      },
+
+      onApprove: function (data, actions) {
+        return actions.order.capture().then(function (details) {
+          const items = getSelectedItems().items;
+          transactionId = details.id;
+
+          fetch("http://localhost:5000/capture", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              payer: details.payer.name.given_name,
+              transaction_id: transactionId,
+              items: items
+            })
+          })
+          .then(() => {
+            console.log("📸 צילום הפנים מופעל...");
+            pollTriggerReady();
+          })
+          .catch(err => {
+            console.error("שגיאה ב־trigger:", err);
+            alert("שגיאה בהפעלת צילום הפנים");
+          });
+        });
+      }
+    }).render('#paypal-button-container');
+
+    // כפתור אימות פנים
+    document.getElementById("verify-btn").addEventListener("click", function () {
+      if (!transactionId) {
+        alert("❌ אין transaction ID – עליך לבצע תשלום קודם");
+        return;
+      }
+
+      fetch("http://localhost:5000/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transaction_id: transactionId })
+      })
+        .then(res => res.text())
+        .then(msg => {
+          console.log("🔁 תגובה מהשרת:", msg);
+
+          if (msg.includes("MATCH_FOUND")) {
+            alert("✅ פנים זוהו והמנעול נפתח!");
+
+            // נשלח גם את predict מיד אחרי האימות
+            fetch("http://localhost:5000/predict", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ transaction_id: transactionId })
+            })
+              .then(res => res.text())
+              .then(predictMsg => {
+                if (predictMsg.includes("כל המוצרים שזוהו נמצאים ברכישה")) {
+                  alert("🛒 זיהוי המוצר הצליח! כל המוצרים תואמים לרכישה");
+                } else if (predictMsg.includes("מוצר שלא נרכש")) {
+                  alert("⚠️ זוהה מוצר שלא נרכש!");
+                } else {
+                  alert(predictMsg);
+                }
+              });
+          } else if (msg.includes("NO_MATCH")) {
+            alert("❌ פנים לא זוהו – המקרר נשאר נעול");
+          } else {
+            alert(msg);
+          }
+        })
+        .catch(err => {
+          console.error("שגיאה באימות:", err);
+          alert("❌ שגיאה באימות");
+        });
+    });
+
+    // כפתור זיהוי מוצר בלבד
+    document.getElementById("predict-btn").addEventListener("click", function () {
+      if (!transactionId) {
+        alert("❌ אין transaction ID – עליך לבצע תשלום קודם");
+        return;
+      }
+
+      fetch("http://localhost:5000/predict", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transaction_id: transactionId })
+      })
+        .then(res => res.text())
+        .then(predictMsg => {
+          if (predictMsg.includes("כל המוצרים שזוהו נמצאים ברכישה")) {
+            alert("🛒 זיהוי המוצר הצליח! כל המוצרים תואמים לרכישה");
+          } else if (predictMsg.includes("מוצר שלא נרכש")) {
+            alert("⚠️ זוהה מוצר שלא נרכש!");
+          } else {
+            alert(predictMsg);
+          }
+        })
+        .catch(err => {
+          console.error("שגיאה בהרצת predict:", err);
+          alert("❌ שגיאה בהרצת זיהוי מוצר");
+        });
+    });
+  </script>
+</body>
+</html>
